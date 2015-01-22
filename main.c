@@ -2,7 +2,8 @@
  * Demo for LiFePO4wered/USB modules
  *
  * The board has a (boosted) LED and a touch sensor.  The idea is to be able
- * to touch-program a 10 second light sequence which will be repeated.
+ * to touch-program a ten second light sequence which will be repeated every
+ * ten seconds.
  */
 
 #include <msp430.h> 
@@ -34,38 +35,77 @@
 /* Number of touch measurment cycles where baseline follows
  * touch level directly */
 
-#define		START_CYCLES		20
+#define		START_CYCLES		40
 
 /* Base filter multiplier and shift */
 
 #define 	BASE_FILTER_SHIFT	6
-#define		BASE_FILTER_MUL		((1<<BASE_FILTER_SHIFT)-1)
+#define		BASE_FILTER_MUL		(uint32_t)((1<<BASE_FILTER_SHIFT)-1)
 
 /* Base filter multiplier and shift for when touch is active */
 
 #define 	BASE_ACTIVE_SHIFT	10
-#define		BASE_ACTIVE_MUL		((1<<BASE_ACTIVE_SHIFT)-1)
+#define		BASE_ACTIVE_MUL		(uint32_t)((1<<BASE_ACTIVE_SHIFT)-1)
 
 /* Touch detect threshold and hysteresis */
 
 #define		TOUCH_THRESHOLD		20
 #define		TOUCH_HYSTERESIS	5
 
+/* Define active states */
+
+#define		TOUCH_INACTIVE		0x00
+#define		TOUCH_START			0x01
+#define		TOUCH_STOP			0x02
+#define		TOUCH_HELD			0x03
+#define		TOUCH_ACTIVE_MASK	0x01
+#define 	TOUCH_MASK			0x03
+
 /* Touch structure */
 
 struct {
+	/* Touch active state variable */
+	uint8_t				active;
 	/* Touch capture variables used from the interrupt */
 	volatile uint8_t 	cap_cycle;
 	volatile uint16_t	cap_start;
-	volatile uint16_t	cap_end;
 	/* Touch and baseline levels */
-	uint32_t			touch_level;
-	uint32_t			base_level;
+	volatile uint16_t	touch_level;
+	uint16_t			base_level;
 	/* Baseline follows touch during initial cycles */
-	uint16_t			start_cycle;
-	/* Touch active state variable */
-	uint8_t				active;
+	uint8_t				start_cycle;
 } touch;
+
+
+/* LED sequence divider */
+
+#define		LED_SEQ_DIV			2
+
+/* LED sequence length */
+
+#define		LED_SEQ_LENGTH		100
+
+/* LED programming countdown count */
+
+#define		LED_PROG_COUNT		30
+
+/* LED sequence structure */
+
+struct {
+	/* Sequencer divide counter (lower rate than WDT timer) */
+	uint8_t 			div_cnt;
+	/* Accumulator while programming */
+	uint8_t				prog_acc;
+	/* Sequence store */
+	uint8_t				seq[LED_SEQ_LENGTH];
+	/* Sequence read and write indices */
+	uint8_t				seq_read_idx;
+	uint8_t				seq_write_idx;
+	/* Sequence has light flag */
+	uint8_t				seq_has_light;
+	/* Programming countdown */
+	uint8_t				prog_countdown;
+} led;
 
 
 /* Initialize hardware */
@@ -98,6 +138,9 @@ void Init(void) {
 	TACTL = TASSEL1 | MC1;
 	/* CCR1 input capture on both rising and falling edge */
 	TACCTL1 = CM0 | CM1 | CAP | CCIE;
+
+	/* Initialize variables */
+	led.seq_write_idx = LED_SEQ_LENGTH;
 }
 
 /* Set LED state */
@@ -119,12 +162,17 @@ int main(void) {
 
     /* Main loop */
 	for (;;) {
-	    /* Enable interrupts and go to sleep */
-		_BIS_SR(GIE | LPM1_bits);
+		/* Determine how deep we sleep: if we're programming, or the
+		 * sequence has light, we need to keep SMCLK on */
+		if (led.seq_write_idx < LED_SEQ_LENGTH || led.seq_has_light) {
+			/* Enable interrupts and go to sleep, keep SMCLK on */
+			_BIS_SR(GIE | LPM1_bits);
+		} else {
+			/* Enable interrupts and go to deeper sleep */
+			_BIS_SR(GIE | LPM3_bits);
+		}
 
 		/* Process touch capture: */
-		/* Calculate touch level */
-		touch.touch_level = touch.cap_end - touch.cap_start;
 		/* Apply filtering to determine baseline */
 		if (touch.start_cycle < START_CYCLES) {
 			/* Track touch level directly on startup while things settle */
@@ -133,7 +181,7 @@ int main(void) {
 		} else {
 			/* Simple first order filter for baseline, much slower when
 			 * touch is active to be able to press and hold */
-			if (touch.active) {
+			if (touch.active & TOUCH_ACTIVE_MASK) {
 				touch.base_level = ((touch.base_level * BASE_ACTIVE_MUL)
 					+ touch.touch_level) >> BASE_ACTIVE_SHIFT;
 			} else {
@@ -146,13 +194,61 @@ int main(void) {
 			}
 		}
 		/* Determine if touch is above threshold relative to baseline */
-		touch.active = (touch.touch_level - touch.base_level) >
-						(TOUCH_THRESHOLD + (touch.active ?
-						-TOUCH_HYSTERESIS : TOUCH_HYSTERESIS));
+		touch.active = ((touch.active << 1) & TOUCH_MASK) |
+						((touch.touch_level - touch.base_level) >
+						(TOUCH_THRESHOLD + (touch.active & TOUCH_ACTIVE_MASK ?
+						-TOUCH_HYSTERESIS : TOUCH_HYSTERESIS)));
 
 		/* Process LED sequence: */
-		/* Turn on LED if touch active */
-		SetLED(touch.active);
+		/* Are we in programming countdown? */
+		if (led.prog_countdown > 0) {
+			/* Blink LED */
+			SetLED(led.prog_countdown & 0x01);
+			led.prog_countdown--;
+		} else
+		/* Are we programming a sequence? */
+		if (led.seq_write_idx < LED_SEQ_LENGTH) {
+			/* Turn on LED if touch active */
+			SetLED(touch.active & TOUCH_ACTIVE_MASK);
+			/* Accumulate touch state */
+			led.prog_acc += touch.active & TOUCH_ACTIVE_MASK;
+			/* Run sequence divider */
+			if (++led.div_cnt >= LED_SEQ_DIV) {
+				/* Sequence step ready, reset divider */
+				led.div_cnt = 0;
+				/* Save the step */
+				led.seq[led.seq_write_idx] = led.prog_acc > (LED_SEQ_DIV/2);
+				/* Update sequence has light flag */
+				led.seq_has_light |= led.seq[led.seq_write_idx];
+				/* Increment the write index */
+				led.seq_write_idx++;
+				/* Reset the accumulator */
+				led.prog_acc = 0;
+			}
+		} else
+		/* Not in programming, did a touch just start? */
+		if (touch.active == TOUCH_START) {
+			/* Turn on programming countdown */
+			led.prog_countdown = LED_PROG_COUNT;
+			/* Reset indeces and divider */
+			led.seq_write_idx = 0;
+			led.seq_read_idx = 0;
+			led.div_cnt = 0;
+			/* Reset sequence has light flag */
+			led.seq_has_light = 0;
+		} else {
+			/* Set the LED from the sequence */
+			SetLED(led.seq[led.seq_read_idx]);
+			/* Run sequence divider */
+			if (++led.div_cnt >= LED_SEQ_DIV) {
+				/* Sequence step ready, reset divider */
+				led.div_cnt = 0;
+				/* Increment and wrap index */
+				if (++led.seq_read_idx >= LED_SEQ_LENGTH) {
+					led.seq_read_idx = 0;
+				}
+			}
+		}
 	}
 }
 
@@ -168,8 +264,6 @@ __interrupt void TimerA0_ISR(void) {
 
 #pragma vector=TIMERA1_VECTOR
 __interrupt void TimerA_ISR(void) {
-	/* Enable interrupts so Timer A CCR0 can be updated */
-	_BIS_SR(GIE);
 	/* Clear the interrupt flag */
 	TACCTL1 &= ~CCIFG;
 	/* In a touch capture sequence? */
@@ -177,9 +271,9 @@ __interrupt void TimerA_ISR(void) {
 		/* Toggle the sensor pull */
 		P1OUT ^= TOUCH_PIN_MASK;
 	} else {
-		/* Save the end count */
-		touch.cap_end = TACCR1;
-		/* Exit sleep to process touch capture */
+		/* Calculate the touch level */
+		touch.touch_level = TACCR1 - touch.cap_start;
+		/* Exit sleep to process touch capture and run LED sequence */
 		_BIC_SR_IRQ(LPM3_bits);
 	}
 }
@@ -188,14 +282,12 @@ __interrupt void TimerA_ISR(void) {
 
 #pragma vector=WDT_VECTOR
 __interrupt void WDTInterval_ISR(void) {
-	/* Enable interrupts so Timer A CCR0 can be updated */
-	_BIS_SR(GIE);
 	/* Reset the touch timer capture cycle counter */
 	touch.cap_cycle = TOUCH_CAP_CYCLES;
 	/* Save the start count */
 	touch.cap_start = TAR;
-	/* Toggle the sensor pull */
-	P1OUT ^= TOUCH_PIN_MASK;
 	/* Don't drive LED while we measure and process touch */
 	TACCTL0 = OUTMOD_5;
+	/* Toggle the sensor pull */
+	P1OUT ^= TOUCH_PIN_MASK;
 }
