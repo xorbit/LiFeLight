@@ -1,9 +1,12 @@
-/* LiFeLight
+/*
+ * LiFeLight (c) 2015 Patrick Van Oosterwijck
  * Demo for LiFePO4wered/USB modules
  *
  * The board has a (boosted) LED and a touch sensor.  The idea is to be able
  * to touch-program a ten second light sequence which will be repeated every
  * ten seconds.
+
+ * MIT Licensed.
  */
 
 #include <msp430.h> 
