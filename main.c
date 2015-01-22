@@ -26,6 +26,7 @@
 
 #define		LED_TOGGLE_TIME		5
 
+
 /* Touch capture cycles */
 
 #define		TOUCH_CAP_CYCLES	20
@@ -40,19 +41,29 @@
 #define 	BASE_FILTER_SHIFT	6
 #define		BASE_FILTER_MUL		((1<<BASE_FILTER_SHIFT)-1)
 
-/* Touch detect threshold */
+/* Base filter multiplier and shift for when touch is active */
+
+#define 	BASE_ACTIVE_SHIFT	10
+#define		BASE_ACTIVE_MUL		((1<<BASE_ACTIVE_SHIFT)-1)
+
+/* Touch detect threshold and hysteresis */
 
 #define		TOUCH_THRESHOLD		20
+#define		TOUCH_HYSTERESIS	5
 
 /* Touch structure */
 
 struct {
+	/* Touch capture variables used from the interrupt */
 	volatile uint8_t 	cap_cycle;
 	volatile uint16_t	cap_start;
 	volatile uint16_t	cap_end;
+	/* Touch and baseline levels */
 	uint32_t			touch_level;
 	uint32_t			base_level;
+	/* Baseline follows touch during initial cycles */
 	uint16_t			start_cycle;
+	/* Touch active state variable */
 	uint8_t				active;
 } touch;
 
@@ -119,17 +130,25 @@ int main(void) {
 			/* Track touch level directly on startup while things settle */
 			touch.base_level = touch.touch_level;
 			touch.start_cycle++;
-		} else if (!touch.active) {
-			/* Simple first order filter for baseline */
-			touch.base_level = ((touch.base_level * BASE_FILTER_MUL)
-				+ touch.touch_level) >> BASE_FILTER_SHIFT;
-			/* Immediately reduce baseline if touch is lower though */
+		} else {
+			/* Simple first order filter for baseline, much slower when
+			 * touch is active to be able to press and hold */
+			if (touch.active) {
+				touch.base_level = ((touch.base_level * BASE_ACTIVE_MUL)
+					+ touch.touch_level) >> BASE_ACTIVE_SHIFT;
+			} else {
+				touch.base_level = ((touch.base_level * BASE_FILTER_MUL)
+					+ touch.touch_level) >> BASE_FILTER_SHIFT;
+			}
+			/* Immediately reduce baseline if touch is lower than baseline */
 			if (touch.touch_level < touch.base_level) {
 				touch.base_level = touch.touch_level;
 			}
 		}
 		/* Determine if touch is above threshold relative to baseline */
-		touch.active = (touch.touch_level - touch.base_level) > TOUCH_THRESHOLD;
+		touch.active = (touch.touch_level - touch.base_level) >
+						(TOUCH_THRESHOLD + (touch.active ?
+						-TOUCH_HYSTERESIS : TOUCH_HYSTERESIS));
 
 		/* Process LED sequence: */
 		/* Turn on LED if touch active */
