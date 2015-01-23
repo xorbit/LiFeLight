@@ -169,7 +169,7 @@ int main(void) {
          * sequence has light, we need to keep SMCLK on */
         if (led.seq_write_idx < LED_SEQ_LENGTH || led.seq_has_light) {
             /* Enable interrupts and go to sleep, keep SMCLK on */
-            _BIS_SR(GIE | LPM1_bits);
+            _BIS_SR(GIE | LPM0_bits);
         } else {
             /* Enable interrupts and go to deeper sleep */
             _BIS_SR(GIE | LPM3_bits);
@@ -293,4 +293,6 @@ __interrupt void WDTInterval_ISR(void) {
     TACCTL0 = OUTMOD_5;
     /* Toggle the sensor pull */
     P1OUT ^= TOUCH_PIN_MASK;
+    /* Turn SMCLK and DCO back on if they were off */
+    _BIC_SR_IRQ(SCG1 | SCG0);
 }
