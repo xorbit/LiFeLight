@@ -52,7 +52,7 @@
 
 /* Touch detect threshold and hysteresis */
 
-#define     TOUCH_THRESHOLD     20
+#define     TOUCH_THRESHOLD     15
 #define     TOUCH_HYSTERESIS    5
 
 /* Define active states */
@@ -176,7 +176,7 @@ int main(void) {
         }
 
         /* Process touch capture: */
-        /* Apply filtering to determine baseline */
+        /* Are we just starting up? (Reading not settled yet?) */
         if (touch.start_cycle < START_CYCLES) {
             /* Track touch level directly on startup while things settle */
             touch.base_level = touch.touch_level;
@@ -223,8 +223,18 @@ int main(void) {
                 led.seq[led.seq_write_idx] = led.prog_acc > (LED_SEQ_DIV/2);
                 /* Update sequence has light flag */
                 led.seq_has_light |= led.seq[led.seq_write_idx];
-                /* Increment the write index */
-                led.seq_write_idx++;
+                /* Is this the first reading, and it is on? */
+                if (led.seq_write_idx == 0 && led.seq_has_light) {
+                    /* This is a special case, the light will be on solid,
+                     * so fill the rest of the sequence right away */
+                    for (; led.seq_write_idx < LED_SEQ_LENGTH;
+                            led.seq_write_idx++) {
+                        led.seq[led.seq_write_idx] = 1;
+                    }
+                } else {
+                    /* Increment the write index */
+                    led.seq_write_idx++;
+                }
                 /* Reset the accumulator */
                 led.prog_acc = 0;
             }
